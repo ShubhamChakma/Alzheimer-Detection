@@ -1,0 +1,203 @@
+# Import necessary libraries
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import RandomForestClassifier
+from xgboost import XGBClassifier
+from sklearn.svm import SVC
+from sklearn.metrics import (classification_report, confusion_matrix, accuracy_score,
+                            roc_auc_score, precision_score, recall_score, f1_score,
+                            precision_recall_curve, roc_curve, auc)
+from imblearn.over_sampling import SMOTE
+from sklearn.model_selection import cross_val_score
+from collections import defaultdict
+
+# Mount Google Drive
+from google.colab import drive
+drive.mount('/content/drive')
+
+# Load dataset from Drive
+file_path = '/content/drive/MyDrive/archive/alzheimer.csv'  # Update with your exact path
+data = pd.read_csv(file_path)
+
+# Data Exploration
+print("Dataset shape:", data.shape)
+print("\nFirst 5 rows:")
+print(data.head())
+print("\nMissing values:")
+print(data.isnull().sum())
+print("\nDiagnosis distribution:")
+print(data['Diagnosis'].value_counts())
+
+# Data Preprocessing
+# Drop unnecessary columns if they exist
+cols_to_drop = ['PatientID', 'DoctorInCharge']
+data = data.drop([col for col in cols_to_drop if col in data.columns], axis=1)
+
+# Feature Engineering
+if all(col in data.columns for col in ['SystolicBP', 'DiastolicBP']):
+    data['BP_Ratio'] = data['SystolicBP'] / data['DiastolicBP']
+if all(col in data.columns for col in ['CholesterolLDL', 'CholesterolHDL']):
+    data['Chol_Ratio'] = data['CholesterolLDL'] / data['CholesterolHDL']
+
+# Prepare features and target
+X = data.drop('Diagnosis', axis=1)
+y = data['Diagnosis']
+
+# Split data
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42, stratify=y)
+
+# Feature Scaling
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)
+X_test_scaled = scaler.transform(X_test)
+
+# Handle class imbalance
+smote = SMOTE(random_state=42)
+X_train_smote, y_train_smote = smote.fit_resample(X_train_scaled, y_train)
+
+# Initialize models
+models = {
+    "XGBoost": XGBClassifier(random_state=42, eval_metric='logloss'),
+    "Random Forest": RandomForestClassifier(random_state=42),
+    "SVM": SVC(probability=True, random_state=42)
+}
+
+# Dictionary to store all metrics
+all_metrics = defaultdict(dict)
+
+# Train and evaluate models
+for name, model in models.items():
+    print(f"\n{'='*50}")
+    print(f"Training and evaluating {name}")
+    print(f"{'='*50}")
+
+    # Fit model
+    model.fit(X_train_smote, y_train_smote)
+
+    # Make predictions
+    y_pred = model.predict(X_test_scaled)
+    y_prob = model.predict_proba(X_test_scaled)[:,1] if hasattr(model, "predict_proba") else [0]*len(X_test_scaled)
+
+    # Calculate metrics
+    accuracy = accuracy_score(y_test, y_pred)
+    precision = precision_score(y_test, y_pred)
+    recall = recall_score(y_test, y_pred)
+    f1 = f1_score(y_test, y_pred)
+    roc_auc = roc_auc_score(y_test, y_prob) if hasattr(model, "predict_proba") else None
+
+    # Cross-validation
+    cv_scores = cross_val_score(model, X_train_smote, y_train_smote, cv=5, scoring='accuracy')
+
+    # Store metrics
+    all_metrics[name]['Accuracy'] = accuracy
+    all_metrics[name]['Precision'] = precision
+    all_metrics[name]['Recall'] = recall
+    all_metrics[name]['F1 Score'] = f1
+    all_metrics[name]['ROC AUC'] = roc_auc
+    all_metrics[name]['CV Mean Accuracy'] = cv_scores.mean()
+    all_metrics[name]['CV Std Accuracy'] = cv_scores.std()
+
+    # Print comprehensive report
+    print(f"\n{name} Performance Metrics:")
+    print(f"- Accuracy: {accuracy:.4f}")
+    print(f"- Precision: {precision:.4f}")
+    print(f"- Recall/Sensitivity: {recall:.4f}")
+    print(f"- F1 Score: {f1:.4f}")
+    if roc_auc is not None:
+        print(f"- ROC AUC: {roc_auc:.4f}")
+    print(f"- Cross-validation Accuracy: {cv_scores.mean():.4f} (±{cv_scores.std():.4f})")
+
+    print("\nClassification Report:")
+    print(classification_report(y_test, y_pred))
+
+    # Plot confusion matrix
+    cm = confusion_matrix(y_test, y_pred)
+    plt.figure(figsize=(6,6))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                xticklabels=['Negative', 'Positive'],
+                yticklabels=['Negative', 'Positive'])
+    plt.title(f'{name} Confusion Matrix')
+    plt.xlabel('Predicted')
+    plt.ylabel('Actual')
+    plt.show()
+
+    # Plot ROC curve if model supports probabilities
+    if hasattr(model, "predict_proba"):
+        fpr, tpr, thresholds = roc_curve(y_test, y_prob)
+        roc_auc = auc(fpr, tpr)
+
+        plt.figure(figsize=(8,6))
+        plt.plot(fpr, tpr, color='darkorange', lw=2,
+                 label=f'ROC curve (area = {roc_auc:.2f})')
+        plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+        plt.xlim([0.0, 1.0])
+        plt.ylim([0.0, 1.05])
+        plt.xlabel('False Positive Rate')
+        plt.ylabel('True Positive Rate')
+        plt.title(f'{name} - Receiver Operating Characteristic')
+        plt.legend(loc="lower right")
+        plt.show()
+
+    # Plot Precision-Recall curve
+    precision_curve, recall_curve, _ = precision_recall_curve(y_test, y_prob)
+
+    plt.figure(figsize=(8,6))
+    plt.plot(recall_curve, precision_curve, color='blue', lw=2,
+             label='Precision-Recall curve')
+    plt.xlabel('Recall')
+    plt.ylabel('Precision')
+    plt.title(f'{name} - Precision-Recall Curve')
+    plt.legend(loc="lower left")
+    plt.show()
+
+# Feature Importance (for tree-based models)
+for name in ['XGBoost', 'Random Forest']:
+    if name in models:
+        print(f"\n{'='*50}")
+        print(f"{name} Feature Importances")
+        print(f"{'='*50}")
+
+        importance = pd.DataFrame({
+            'Feature': X.columns,
+            'Importance': models[name].feature_importances_
+        }).sort_values('Importance', ascending=False)
+
+        print(importance.head(10))
+
+        plt.figure(figsize=(12,8))
+        sns.barplot(x='Importance', y='Feature', data=importance.head(15))
+        plt.title(f'{name} - Top 15 Important Features')
+        plt.show()
+
+# Compare all models
+print("\n" + "="*50)
+print("Model Comparison Summary")
+print("="*50)
+
+metrics_df = pd.DataFrame(all_metrics).T
+metrics_df = metrics_df[['Accuracy', 'Precision', 'Recall', 'F1 Score', 'ROC AUC', 'CV Mean Accuracy', 'CV Std Accuracy']]
+print(metrics_df)
+
+# Plot comparison of key metrics
+plt.figure(figsize=(12, 8))
+metrics_to_plot = ['Accuracy', 'Precision', 'Recall', 'F1 Score']
+metrics_df[metrics_to_plot].plot(kind='bar', figsize=(12, 6))
+plt.title('Model Performance Comparison')
+plt.ylabel('Score')
+plt.xticks(rotation=45)
+plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+plt.tight_layout()
+plt.show()
+
+# Plot ROC AUC comparison if available
+if all(metrics_df['ROC AUC'].notna()):
+    plt.figure(figsize=(10, 6))
+    sns.barplot(x=metrics_df.index, y=metrics_df['ROC AUC'])
+    plt.title('Model ROC AUC Comparison')
+    plt.ylabel('ROC AUC Score')
+    plt.xticks(rotation=45)
+    plt.show()
